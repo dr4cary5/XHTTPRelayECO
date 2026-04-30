@@ -76,7 +76,7 @@ vercel deploy
 | `RELAY_PATH` | 🔴 اجباری | مسیر مجاز relay (مثلا `/api`) | - |
 | `RELAY_KEY` | ⚪ اختیاری | کلید auth از طریق header | خالی |
 | `UPSTREAM_TIMEOUT_MS` | ⚪ اختیاری | تایم‌اوت upstream | `120000` |
-| `MAX_INFLIGHT` | ⚪ اختیاری | حداکثر درخواست همزمان هر instance | `4` |
+| `MAX_INFLIGHT` | ⚪ اختیاری | حداکثر درخواست همزمان هر instance | `24` |
 | `MAX_UP_BPS` | ⚪ اختیاری | سقف سرعت آپلود (bytes/sec) | `1572864` |
 | `MAX_DOWN_BPS` | ⚪ اختیاری | سقف سرعت دانلود (bytes/sec) | `1572864` |
 
@@ -95,13 +95,13 @@ vercel --prod
 1. سرعت نسخه اصلی را تست کن (مثلا میانگین download Bps)
 2. `MAX_DOWN_BPS` را روی حدود 50% همان عدد بگذار
 3. `MAX_UP_BPS` را هم نزدیک 50% آپلود نسخه اصلی تنظیم کن
-4. اگر latency spike داری، `MAX_INFLIGHT` را کمتر کن (مثلا `2`)
+4. اگر هنوز `503` دیدی، `MAX_INFLIGHT` را بیشتر کن (مثلا `32` یا `48`)
 
 نمونه:
 ```text
 MAX_UP_BPS=1200000
 MAX_DOWN_BPS=1800000
-MAX_INFLIGHT=2
+MAX_INFLIGHT=32
 ```
 
 ---

@@ -12,7 +12,7 @@ const PLATFORM_HEADER_PREFIX = `x-${String.fromCharCode(118, 101, 114, 99, 101, 
 const RELAY_PATH = normalizeRelayPath(process.env.RELAY_PATH || "");
 const RELAY_KEY = (process.env.RELAY_KEY || "").trim();
 const UPSTREAM_TIMEOUT_MS = parsePositiveInt(process.env.UPSTREAM_TIMEOUT_MS, 120000, 1000);
-const MAX_INFLIGHT = parsePositiveInt(process.env.MAX_INFLIGHT, 4, 1);
+const MAX_INFLIGHT = parsePositiveInt(process.env.MAX_INFLIGHT, 24, 1);
 const MAX_UP_BPS = parseNonNegativeInt(process.env.MAX_UP_BPS, 1572864);
 const MAX_DOWN_BPS = parseNonNegativeInt(process.env.MAX_DOWN_BPS, 1572864);
 
@@ -56,6 +56,7 @@ let inFlight = 0;
 export default async function handler(req, res) {
   const requestId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
   const startedAt = Date.now();
+  let slotAcquired = false;
 
   if (!TARGET_BASE) {
     res.statusCode = 500;
@@ -72,12 +73,6 @@ export default async function handler(req, res) {
   if (RELAY_KEY && RELAY_KEY.length < 16) {
     res.statusCode = 500;
     return res.end("Misconfigured: RELAY_KEY is too short");
-  }
-
-  if (!tryAcquireSlot()) {
-    res.statusCode = 503;
-    res.setHeader("retry-after", "1");
-    return res.end("Server Busy: Too Many Inflight Requests");
   }
 
   try {
@@ -102,6 +97,12 @@ export default async function handler(req, res) {
         return res.end("Forbidden");
       }
     }
+    if (!tryAcquireSlot()) {
+      res.statusCode = 503;
+      res.setHeader("retry-after", "1");
+      return res.end("Server Busy: Too Many Inflight Requests");
+    }
+    slotAcquired = true;
 
     const targetUrl = `${TARGET_BASE}${url.pathname}${url.search || ""}`;
 
@@ -198,7 +199,7 @@ export default async function handler(req, res) {
       return res.end("Bad Gateway: Tunnel Failed");
     }
   } finally {
-    releaseSlot();
+    if (slotAcquired) releaseSlot();
   }
 }
 
