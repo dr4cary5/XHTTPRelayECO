@@ -729,12 +729,18 @@ function Get-ProjectsFromVercel([string]$Scope) {
     if ($parsedText.Count -gt 0) { return $parsedText }
   }
 
-  throw "Could not parse Vercel project list. Try auth mode 3 (token) or set a valid scope."
+  throw "Could not parse Vercel project list. Try auth mode 2 (token) or set a valid scope."
 }
 
 function Select-ProjectFromList([string]$Scope) {
   Write-Step "Loading projects from Vercel..."
-  $projects = Get-ProjectsFromVercel -Scope $Scope
+  try {
+    $projects = Get-ProjectsFromVercel -Scope $Scope
+  } catch {
+    Write-Host "Could not load project list: $($_.Exception.Message)" -ForegroundColor Red
+    Write-Host "Tip: continue with option 5 (Deploy as NEW project), or retry with token auth." -ForegroundColor DarkYellow
+    return $null
+  }
   if ($projects.Count -eq 0) {
     Write-Host "No projects found in this scope." -ForegroundColor DarkYellow
     return $null
@@ -764,7 +770,13 @@ function Select-ProjectFromList([string]$Scope) {
 
 function Select-ProjectOrNewForFirstRun([string]$Scope) {
   Write-Step "No linked project found. Loading your Vercel projects..."
-  $projects = Get-ProjectsFromVercel -Scope $Scope
+  try {
+    $projects = Get-ProjectsFromVercel -Scope $Scope
+  } catch {
+    Write-Host "Could not load projects list. Continuing with NEW-project flow." -ForegroundColor DarkYellow
+    Write-Host "Details: $($_.Exception.Message)" -ForegroundColor DarkGray
+    $projects = @()
+  }
 
   Write-Host ""
   Write-Host "Choose a target to continue:" -ForegroundColor Cyan
