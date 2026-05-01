@@ -51,6 +51,34 @@ function Refresh-Path {
   $env:Path = "$machine;$user"
 }
 
+function Get-TokenStorePath([string]$ProjectRoot) {
+  return (Join-Path $ProjectRoot ".vercel-token.dpapi")
+}
+
+function Save-TokenSecure([string]$Token, [string]$Path) {
+  $secure = ConvertTo-SecureString -String $Token -AsPlainText -Force
+  $text = ConvertFrom-SecureString -SecureString $secure
+  $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+  [System.IO.File]::WriteAllText($Path, $text, $utf8NoBom)
+}
+
+function Load-TokenSecure([string]$Path) {
+  if (-not (Test-Path $Path)) { return "" }
+  try {
+    $text = (Get-Content $Path -Raw).Trim()
+    if ([string]::IsNullOrWhiteSpace($text)) { return "" }
+    $secure = ConvertTo-SecureString -String $text
+    $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
+    try {
+      return [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
+    } finally {
+      [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
+    }
+  } catch {
+    return ""
+  }
+}
+
 function Invoke-NativeSafe {
   param(
     [Parameter(Mandatory = $true)][string]$FilePath,
@@ -139,18 +167,105 @@ function Ensure-VercelCli {
   }
 }
 
-function Ensure-VercelLogin {
-  Write-Step "Checking Vercel login..."
-  $loggedIn = $true
+function Start-VercelOobLogin([string]$OutputDir) {
+  Write-Host "Starting manual device login (no auto browser)..." -ForegroundColor Yellow
+  $prevBrowser = $env:BROWSER
+  $env:BROWSER = "none"
   try {
-    & $VercelExe whoami *> $null
-  } catch {
-    $loggedIn = $false
+    $loginResult = Invoke-NativeSafe -FilePath $VercelExe -Arguments @("login", "--oob", "--no-color")
+  } finally {
+    if ($null -eq $prevBrowser) {
+      Remove-Item Env:\BROWSER -ErrorAction SilentlyContinue
+    } else {
+      $env:BROWSER = $prevBrowser
+    }
+  }
+  $loginResult.Output | Out-Host
+  if ($loginResult.ExitCode -ne 0) {
+    throw "vercel login failed."
   }
 
-  if (-not $loggedIn) {
-    Write-Host "Browser login will open now. Complete login then return here." -ForegroundColor Yellow
-    & $VercelExe login | Out-Host
+  $urls = @()
+  foreach ($line in $loginResult.Output) {
+    $matches = [regex]::Matches($line, 'https?://[^\s\)\]]+')
+    foreach ($m in $matches) {
+      if ($m.Value -match 'vercel\.com/(oauth/device|device)') {
+        $urls += $m.Value
+      }
+    }
+  }
+  $urls = $urls | Select-Object -Unique
+
+  if ($urls.Count -gt 0) {
+    $txtPath = Join-Path $OutputDir "vercel-login-link.txt"
+    $content = @(
+      "Vercel Login Links"
+      "Generated: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+      ""
+    ) + $urls
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllLines($txtPath, $content, $utf8NoBom)
+
+    Write-Host ""
+    Write-Host "Manual login URL(s):" -ForegroundColor Cyan
+    $urls | ForEach-Object { Write-Host "  $_" -ForegroundColor Cyan }
+    Write-Host "Saved to: $txtPath" -ForegroundColor Cyan
+  } else {
+    Write-Host "No explicit login URL found in output. If prompted, use: https://vercel.com/device" -ForegroundColor DarkYellow
+  }
+}
+
+function Ensure-VercelLogin([string]$OutputDir, [string]$TokenStorePath) {
+  Write-Step "Checking Vercel login..."
+
+  Write-Host "Choose auth mode:" -ForegroundColor Cyan
+  Write-Host "[1] Use existing login session (default)"
+  Write-Host "[2] Token mode (recommended: never opens browser, supports secure save)"
+  $authMode = Read-Default "Select auth mode" "1"
+
+  if ($authMode -eq "2" -or $authMode -eq "3") {
+    $token = ""
+    $saved = Load-TokenSecure -Path $TokenStorePath
+    if (-not [string]::IsNullOrWhiteSpace($saved)) {
+      $useSaved = Read-Default "Use saved encrypted token from project folder? (Y/n)" "y"
+      if ($useSaved.ToLowerInvariant() -ne "n") {
+        $token = $saved
+        Write-Host "Using saved encrypted token." -ForegroundColor Green
+      }
+    }
+
+    if ([string]::IsNullOrWhiteSpace($token)) {
+      $token = Read-Required "Paste Vercel token (create from Vercel dashboard -> Settings -> Tokens)"
+      $saveNow = Read-Default "Save token encrypted in this project folder? (Y/n)" "y"
+      if ($saveNow.ToLowerInvariant() -ne "n") {
+        Save-TokenSecure -Token $token -Path $TokenStorePath
+        Write-Host "Token saved securely: $TokenStorePath" -ForegroundColor Green
+      }
+    }
+
+    $env:VERCEL_TOKEN = $token
+    $tokenWhoami = Invoke-NativeSafe -FilePath $VercelExe -Arguments @("whoami", "--token", $token)
+    if ($tokenWhoami.ExitCode -ne 0) {
+      throw "Token auth failed. Check token and retry."
+    }
+    $tokenWhoami.Output | Out-Host
+    return
+  }
+
+  $whoamiResult = Invoke-NativeSafe -FilePath $VercelExe -Arguments @("whoami")
+  $loggedIn = $whoamiResult.ExitCode -eq 0
+
+  if ($authMode -eq "1" -and $loggedIn) {
+    $whoamiResult.Output | Out-Host
+    $useCurrent = Read-Default "Use current logged-in session? (Y/n)" "y"
+    if ($useCurrent.ToLowerInvariant() -eq "n") {
+      Write-Step "Logging out and creating a fresh login link..."
+      $logoutResult = Invoke-NativeSafe -FilePath $VercelExe -Arguments @("logout")
+      $logoutResult.Output | Out-Host
+      Start-VercelOobLogin -OutputDir $OutputDir
+    }
+  } else {
+    Start-VercelOobLogin -OutputDir $OutputDir
   }
 
   & $VercelExe whoami | Out-Host
@@ -189,28 +304,182 @@ function Set-VercelEnv([string]$Name, [string]$Value, [string]$Target, [string]$
   }
 }
 
-function Deploy-Production([string]$Scope) {
-  Write-Step "Deploying to production..."
-  $args = @("deploy", "--prod", "--yes")
-  if (-not [string]::IsNullOrWhiteSpace($Scope)) { $args += @("--scope", $Scope) }
+function New-RandomPackageName {
+  $chars = "abcdefghijklmnopqrstuvwxyz0123456789".ToCharArray()
+  $suffix = -join (1..10 | ForEach-Object { $chars[(Get-Random -Minimum 0 -Maximum $chars.Length)] })
+  return "host-$suffix"
+}
 
-  $result = Invoke-NativeSafe -FilePath $VercelExe -Arguments $args
-  $lines = $result.Output
-  $lines | Out-Host
-  if ($result.ExitCode -ne 0) {
-    throw "vercel deploy failed."
+function New-RandomPackageVersion {
+  $major = Get-Random -Minimum 1 -Maximum 4
+  $minor = Get-Random -Minimum 0 -Maximum 20
+  $patch = Get-Random -Minimum 0 -Maximum 30
+  return "$major.$minor.$patch"
+}
+
+function New-RandomPackageDescription {
+  $descriptions = @(
+    "Lightweight hosting edge relay for low-bandwidth delivery",
+    "Optimized download gateway for shared hosting workloads",
+    "Traffic-shaped relay runtime for static and media hosting",
+    "Resource-friendly transfer bridge for multi-tenant hosting",
+    "Adaptive download routing layer for budget hosting plans",
+    "Low-overhead HTTP delivery relay for content hosting",
+    "Bandwidth-governed relay node for file delivery services",
+    "Edge proxy core for controlled-speed hosting and downloads"
+  )
+  return ($descriptions | Get-Random)
+}
+
+function New-RandomVercelConfigName {
+  $chars = "abcdefghijklmnopqrstuvwxyz0123456789".ToCharArray()
+  $suffix = -join (1..10 | ForEach-Object { $chars[(Get-Random -Minimum 0 -Maximum $chars.Length)] })
+  return "edge-$suffix"
+}
+
+function Prepare-RandomizedPackageMetadataForDeploy {
+  $pkgPath = Join-Path $scriptDir "package.json"
+  if (-not (Test-Path $pkgPath)) {
+    return @{
+      Modified = $false
+      PackagePath = $pkgPath
+      OriginalContent = ""
+    }
   }
 
-  $alias = ""
-  $prod = ""
-  foreach ($line in $lines) {
-    if ($line -match "Aliased:\s*(https://\S+)") { $alias = $Matches[1] }
-    if ($line -match "Production:\s*(https://\S+)") { $prod = $Matches[1] }
+  $original = Get-Content -Path $pkgPath -Raw
+  try {
+    $obj = $original | ConvertFrom-Json
+  } catch {
+    Write-Host "package.json parse failed; deploying without metadata randomization." -ForegroundColor DarkYellow
+    return @{
+      Modified = $false
+      PackagePath = $pkgPath
+      OriginalContent = $original
+    }
   }
+
+  $randomName = New-RandomPackageName
+  $randomVersion = New-RandomPackageVersion
+  $randomDesc = New-RandomPackageDescription
+
+  if ($obj.PSObject.Properties.Name -contains "name") {
+    $obj.name = $randomName
+  } else {
+    $obj | Add-Member -NotePropertyName "name" -NotePropertyValue $randomName
+  }
+  if ($obj.PSObject.Properties.Name -contains "version") {
+    $obj.version = $randomVersion
+  } else {
+    $obj | Add-Member -NotePropertyName "version" -NotePropertyValue $randomVersion
+  }
+  if ($obj.PSObject.Properties.Name -contains "description") {
+    $obj.description = $randomDesc
+  } else {
+    $obj | Add-Member -NotePropertyName "description" -NotePropertyValue $randomDesc
+  }
+
+  $json = $obj | ConvertTo-Json -Depth 50
+  $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+  [System.IO.File]::WriteAllText($pkgPath, $json, $utf8NoBom)
+
+  Write-Host ("Randomized package metadata for this deploy: name={0}, version={1}" -f $randomName, $randomVersion) -ForegroundColor DarkGray
+  Write-Host ("Description: {0}" -f $randomDesc) -ForegroundColor DarkGray
 
   return @{
-    Alias = $alias
-    Production = $prod
+    Modified = $true
+    PackagePath = $pkgPath
+    OriginalContent = $original
+  }
+}
+
+function Restore-PackageMetadataAfterDeploy($state) {
+  if ($null -eq $state) { return }
+  if (-not $state.Modified) { return }
+  $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+  [System.IO.File]::WriteAllText($state.PackagePath, [string]$state.OriginalContent, $utf8NoBom)
+  Write-Host "package.json restored to original local content." -ForegroundColor DarkGray
+}
+
+function Prepare-RandomizedVercelConfigForDeploy {
+  $vercelPath = Join-Path $scriptDir "vercel.json"
+  if (-not (Test-Path $vercelPath)) {
+    return @{
+      Modified = $false
+      ConfigPath = $vercelPath
+      OriginalContent = ""
+    }
+  }
+
+  $original = Get-Content -Path $vercelPath -Raw
+  try {
+    $obj = $original | ConvertFrom-Json
+  } catch {
+    Write-Host "vercel.json parse failed; deploying without vercel.json randomization." -ForegroundColor DarkYellow
+    return @{
+      Modified = $false
+      ConfigPath = $vercelPath
+      OriginalContent = $original
+    }
+  }
+
+  $randomName = New-RandomVercelConfigName
+  if ($obj.PSObject.Properties.Name -contains "name") {
+    $obj.name = $randomName
+  } else {
+    $obj | Add-Member -NotePropertyName "name" -NotePropertyValue $randomName
+  }
+
+  $json = $obj | ConvertTo-Json -Depth 50
+  $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+  [System.IO.File]::WriteAllText($vercelPath, $json, $utf8NoBom)
+
+  Write-Host ("Randomized vercel.json name for this deploy: {0}" -f $randomName) -ForegroundColor DarkGray
+
+  return @{
+    Modified = $true
+    ConfigPath = $vercelPath
+    OriginalContent = $original
+  }
+}
+
+function Restore-VercelConfigAfterDeploy($state) {
+  if ($null -eq $state) { return }
+  if (-not $state.Modified) { return }
+  $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+  [System.IO.File]::WriteAllText($state.ConfigPath, [string]$state.OriginalContent, $utf8NoBom)
+  Write-Host "vercel.json restored to original local content." -ForegroundColor DarkGray
+}
+
+function Deploy-Production([string]$Scope) {
+  Write-Step "Deploying to production..."
+  $randomizeState = Prepare-RandomizedPackageMetadataForDeploy
+  $vercelRandomizeState = Prepare-RandomizedVercelConfigForDeploy
+  try {
+    $args = @("deploy", "--prod", "--yes")
+    if (-not [string]::IsNullOrWhiteSpace($Scope)) { $args += @("--scope", $Scope) }
+
+    $result = Invoke-NativeSafe -FilePath $VercelExe -Arguments $args
+    $lines = $result.Output
+    $lines | Out-Host
+    if ($result.ExitCode -ne 0) {
+      throw "vercel deploy failed."
+    }
+
+    $alias = ""
+    $prod = ""
+    foreach ($line in $lines) {
+      if ($line -match "Aliased:\s*(https://\S+)") { $alias = $Matches[1] }
+      if ($line -match "Production:\s*(https://\S+)") { $prod = $Matches[1] }
+    }
+
+    return @{
+      Alias = $alias
+      Production = $prod
+    }
+  } finally {
+    Restore-VercelConfigAfterDeploy -state $vercelRandomizeState
+    Restore-PackageMetadataAfterDeploy -state $randomizeState
   }
 }
 
@@ -350,32 +619,233 @@ function Show-DeploymentList([string]$ProjectName, [string]$Scope) {
   }
 }
 
-function Show-ManageMenu($linkInfo) {
+function Ensure-LinkedToProject([string]$ProjectName, [string]$Scope) {
+  if ([string]::IsNullOrWhiteSpace($ProjectName)) {
+    throw "Project name is required."
+  }
+  Link-VercelProject -ProjectName $ProjectName -Scope $Scope
+}
+
+function Parse-ProjectListText([string[]]$Lines) {
+  $projects = @()
+  foreach ($line in $Lines) {
+    if ($null -eq $line) { continue }
+    $clean = [regex]::Replace([string]$line, '\x1B\[[0-9;]*[A-Za-z]', '')
+    $trim = $clean.Trim()
+    if ([string]::IsNullOrWhiteSpace($trim)) { continue }
+    if ($trim.StartsWith(">")) { continue }
+    if ($trim.StartsWith("-")) { continue }
+    if ($trim -match '^(Projects|Name|Updated|ID|Inspect|No projects|Fetching|Retrieving|Error:|Warning:|Visit )') { continue }
+    if ($trim -match '^https?://') { continue }
+
+    $name = ($trim -split '\s+')[0]
+    if ($name -match '^[a-zA-Z0-9][a-zA-Z0-9\-_\.]+$') {
+      $projects += [PSCustomObject]@{
+        Name = $name
+        Id = ""
+      }
+    }
+  }
+  return @($projects | Sort-Object Name -Unique)
+}
+
+function Get-ProjectsFromVercel([string]$Scope) {
+  $args = @("project", "list", "--format", "json", "--no-color")
+  if (-not [string]::IsNullOrWhiteSpace($Scope)) { $args += @("--scope", $Scope) }
+  $result = Invoke-NativeSafe -FilePath $VercelExe -Arguments $args
+
+  if ($result.ExitCode -eq 0) {
+    $raw = ($result.Output -join "`n")
+    $raw = $raw -replace "`0", ""
+    $raw = $raw.Trim()
+
+    if (-not [string]::IsNullOrWhiteSpace($raw)) {
+      # Try to isolate JSON payload even if CLI prints extra lines before/after.
+      $jsonCandidate = $raw
+      $firstArray = $raw.IndexOf("[")
+      $lastArray = $raw.LastIndexOf("]")
+      $firstObject = $raw.IndexOf("{")
+      $lastObject = $raw.LastIndexOf("}")
+
+      if ($firstArray -ge 0 -and $lastArray -gt $firstArray) {
+        $jsonCandidate = $raw.Substring($firstArray, $lastArray - $firstArray + 1)
+      } elseif ($firstObject -ge 0 -and $lastObject -gt $firstObject) {
+        $jsonCandidate = $raw.Substring($firstObject, $lastObject - $firstObject + 1)
+      }
+
+      try {
+        $parsed = $jsonCandidate | ConvertFrom-Json
+
+        $items = @()
+        if ($parsed -is [System.Array]) {
+          $items = $parsed
+        } elseif ($parsed.PSObject.Properties.Name -contains "projects") {
+          $items = @($parsed.projects)
+        } else {
+          $items = @($parsed)
+        }
+
+        $projects = @()
+        foreach ($item in $items) {
+          $name = ""
+          if ($item.PSObject.Properties.Name -contains "name" -and $item.name) { $name = [string]$item.name }
+          if ([string]::IsNullOrWhiteSpace($name)) { continue }
+
+          $projectId = ""
+          if ($item.PSObject.Properties.Name -contains "id" -and $item.id) { $projectId = [string]$item.id }
+          $projects += [PSCustomObject]@{
+            Name = $name
+            Id = $projectId
+          }
+        }
+
+        if ($projects.Count -gt 0) {
+          return @($projects | Sort-Object Name -Unique)
+        }
+      } catch {
+        # ignore and continue to text parsing fallbacks below
+      }
+    }
+
+    $parsedText = Parse-ProjectListText -Lines $result.Output
+    if ($parsedText.Count -gt 0) { return $parsedText }
+  }
+
+  # Fallback for CLI variants/versions where JSON format is unavailable.
+  $fallbackCommands = @(
+    @("project", "list", "--no-color"),
+    @("projects", "list", "--no-color"),
+    @("project", "ls", "--no-color"),
+    @("projects", "ls", "--no-color")
+  )
+
+  foreach ($cmd in $fallbackCommands) {
+    $fallbackArgs = @($cmd)
+    if (-not [string]::IsNullOrWhiteSpace($Scope)) { $fallbackArgs += @("--scope", $Scope) }
+    $fallback = Invoke-NativeSafe -FilePath $VercelExe -Arguments $fallbackArgs
+    if ($fallback.ExitCode -ne 0) { continue }
+
+    $parsedText = Parse-ProjectListText -Lines $fallback.Output
+    if ($parsedText.Count -gt 0) { return $parsedText }
+  }
+
+  throw "Could not parse Vercel project list. Try auth mode 3 (token) or set a valid scope."
+}
+
+function Select-ProjectFromList([string]$Scope) {
+  Write-Step "Loading projects from Vercel..."
+  $projects = Get-ProjectsFromVercel -Scope $Scope
+  if ($projects.Count -eq 0) {
+    Write-Host "No projects found in this scope." -ForegroundColor DarkYellow
+    return $null
+  }
+
   Write-Host ""
-  Write-Host "Detected linked project:" -ForegroundColor Cyan
-  if ($linkInfo.ProjectName) { Write-Host "Project: $($linkInfo.ProjectName)" }
-  if ($linkInfo.Scope) { Write-Host "Scope:   $($linkInfo.Scope)" }
+  Write-Host "Projects:" -ForegroundColor Cyan
+  for ($i = 0; $i -lt $projects.Count; $i++) {
+    Write-Host ("[{0}] {1}" -f ($i + 1), $projects[$i].Name)
+  }
+  Write-Host "[0] Cancel"
+
+  while ($true) {
+    $choiceRaw = Read-Default "Select project number" "0"
+    $n = 0
+    if (-not [int]::TryParse($choiceRaw, [ref]$n)) {
+      Write-Host "Invalid number." -ForegroundColor Red
+      continue
+    }
+    if ($n -eq 0) { return $null }
+    if ($n -ge 1 -and $n -le $projects.Count) {
+      return $projects[$n - 1]
+    }
+    Write-Host "Out of range." -ForegroundColor Red
+  }
+}
+
+function Select-ProjectOrNewForFirstRun([string]$Scope) {
+  Write-Step "No linked project found. Loading your Vercel projects..."
+  $projects = Get-ProjectsFromVercel -Scope $Scope
+
   Write-Host ""
-  Write-Host "[1] Redeploy current linked project"
-  Write-Host "[2] Update production env vars"
-  Write-Host "[3] List recent deployments"
-  Write-Host "[4] Deploy as NEW project"
-  Write-Host "[5] Exit"
+  Write-Host "Choose a target to continue:" -ForegroundColor Cyan
+  if ($projects.Count -gt 0) {
+    for ($i = 0; $i -lt $projects.Count; $i++) {
+      Write-Host ("[{0}] Use existing project: {1}" -f ($i + 1), $projects[$i].Name)
+    }
+  } else {
+    Write-Host "No existing projects found in current scope/account." -ForegroundColor DarkYellow
+  }
+
+  $newIndex = $projects.Count + 1
+  Write-Host ("[{0}] Deploy as NEW project" -f $newIndex)
+
+  while ($true) {
+    $choiceRaw = Read-Host "Select one option"
+    $n = 0
+    if (-not [int]::TryParse($choiceRaw, [ref]$n)) {
+      Write-Host "Invalid number." -ForegroundColor Red
+      continue
+    }
+
+    if ($n -eq $newIndex) {
+      return @{
+        Mode = "new"
+        ProjectName = ""
+      }
+    }
+
+    if ($n -ge 1 -and $n -le $projects.Count) {
+      return @{
+        Mode = "existing"
+        ProjectName = $projects[$n - 1].Name
+      }
+    }
+
+    Write-Host "Out of range. Choose one of the listed options." -ForegroundColor Red
+  }
+}
+
+function Show-ManageMenu($selectedProjectName, $scope) {
+  Write-Host ""
+  Write-Host "Current target project:" -ForegroundColor Cyan
+  if ($selectedProjectName) { Write-Host "Project: $selectedProjectName" } else { Write-Host "Project: (not selected)" }
+  if ($scope) { Write-Host "Scope:   $scope" } else { Write-Host "Scope:   (default)" }
+  Write-Host ""
+  Write-Host "[1] Select project from Vercel list"
+  Write-Host "[2] Redeploy selected project"
+  Write-Host "[3] Update production env vars (selected project)"
+  Write-Host "[4] List recent deployments (selected project)"
+  Write-Host "[5] Deploy as NEW project"
+  Write-Host "[6] Exit"
   return (Read-Default "Choose action" "1")
 }
 
 function Run-ManagementLoop {
-  while ($true) {
-    $currentLink = Get-LinkedProjectInfo -ProjectRoot $scriptDir
-    if (-not $currentLink.IsLinked) {
-      Write-Host "No linked project found. Running first-time deployment flow..." -ForegroundColor Yellow
+  $link = Get-LinkedProjectInfo -ProjectRoot $scriptDir
+  $scope = $link.Scope
+  $selectedProjectName = $link.ProjectName
+
+  if ([string]::IsNullOrWhiteSpace($selectedProjectName)) {
+    $firstChoice = Select-ProjectOrNewForFirstRun -Scope $scope
+    if ($firstChoice.Mode -eq "existing") {
+      $selectedProjectName = $firstChoice.ProjectName
+      Ensure-LinkedToProject -ProjectName $selectedProjectName -Scope $scope
+      Write-Host "Selected project: $selectedProjectName" -ForegroundColor Green
+    } else {
       Run-NewDeploymentFlow
-      Read-Host "Press Enter to return to main menu (or Ctrl+C to exit)"
-      continue
+      $link = Get-LinkedProjectInfo -ProjectRoot $scriptDir
+      if ($link.ProjectName) { $selectedProjectName = $link.ProjectName }
+      if ($link.Scope) { $scope = $link.Scope }
+    }
+  }
+
+  while ($true) {
+    if ([string]::IsNullOrWhiteSpace($selectedProjectName)) {
+      Write-Host "No target project selected yet." -ForegroundColor DarkYellow
     }
 
-    $choice = Show-ManageMenu -linkInfo $currentLink
-    if ($choice -eq "5") {
+    $choice = Show-ManageMenu -selectedProjectName $selectedProjectName -scope $scope
+    if ($choice -eq "6") {
       Write-Host "Exit."
       break
     }
@@ -383,20 +853,45 @@ function Run-ManagementLoop {
     try {
       switch ($choice) {
         "1" {
-          $deployInfo = Deploy-Production -Scope $currentLink.Scope
+          $selected = Select-ProjectFromList -Scope $scope
+          if ($null -ne $selected) {
+            $selectedProjectName = $selected.Name
+            Write-Host "Selected project: $selectedProjectName" -ForegroundColor Green
+            Ensure-LinkedToProject -ProjectName $selectedProjectName -Scope $scope
+          }
+        }
+        "2" {
+          if ([string]::IsNullOrWhiteSpace($selectedProjectName)) {
+            Write-Host "Select a project first (option 1)." -ForegroundColor Red
+            break
+          }
+          Ensure-LinkedToProject -ProjectName $selectedProjectName -Scope $scope
+          $deployInfo = Deploy-Production -Scope $scope
           Show-DeploySummary $deployInfo
           Write-Host "Done."
         }
-        "2" {
-          Run-UpdateEnvFlow -Scope $currentLink.Scope
-          Write-Host "Done."
-        }
         "3" {
-          Show-DeploymentList -ProjectName $currentLink.ProjectName -Scope $currentLink.Scope
+          if ([string]::IsNullOrWhiteSpace($selectedProjectName)) {
+            Write-Host "Select a project first (option 1)." -ForegroundColor Red
+            break
+          }
+          Ensure-LinkedToProject -ProjectName $selectedProjectName -Scope $scope
+          Run-UpdateEnvFlow -Scope $scope
           Write-Host "Done."
         }
         "4" {
+          if ([string]::IsNullOrWhiteSpace($selectedProjectName)) {
+            Write-Host "Select a project first (option 1)." -ForegroundColor Red
+            break
+          }
+          Show-DeploymentList -ProjectName $selectedProjectName -Scope $scope
+          Write-Host "Done."
+        }
+        "5" {
           Run-NewDeploymentFlow
+          $newLink = Get-LinkedProjectInfo -ProjectRoot $scriptDir
+          if ($newLink.ProjectName) { $selectedProjectName = $newLink.ProjectName }
+          if ($newLink.Scope) { $scope = $newLink.Scope }
         }
         default {
           Write-Host "Invalid option." -ForegroundColor Red
@@ -418,6 +913,7 @@ Write-Host "Tip: Press Ctrl+C at any step to stop/exit." -ForegroundColor DarkYe
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $scriptDir
+$tokenStorePath = Get-TokenStorePath -ProjectRoot $scriptDir
 
 if (-not (Test-Path (Join-Path $scriptDir "api\index.js"))) {
   throw "api/index.js not found. Run this script from project root."
@@ -428,7 +924,7 @@ if (-not (Test-Path (Join-Path $scriptDir "vercel.json"))) {
 
 Ensure-NodeAndNpm
 Ensure-VercelCli
-Ensure-VercelLogin
+Ensure-VercelLogin -OutputDir $scriptDir -TokenStorePath $tokenStorePath
 Write-Host "Deploy path: $scriptDir" -ForegroundColor DarkGray
 
 Run-ManagementLoop
