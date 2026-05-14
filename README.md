@@ -6,7 +6,7 @@
 
 [![Runtime](https://img.shields.io/badge/Runtime-Rewrite_%2B_Node-black.svg?style=for-the-badge&logo=vercel)]()
 [![Installer](https://img.shields.io/badge/Windows_Installer-Token_API_Mode-blue.svg?style=for-the-badge)]()
-[![Profile](https://img.shields.io/badge/Recommended-FAST_PIPE_REWRITE_SECURE-2ea44f.svg?style=for-the-badge)]()
+[![Profile](https://img.shields.io/badge/Recommended-FAST_PIPE_LEGACY-2ea44f.svg?style=for-the-badge)]()
 
 **داستان این نسخه چیه؟**
 <br>
@@ -32,7 +32,7 @@
 
 ## ✨ تو نسخه جدید چه خبره؟
 
-- 🔥 **مود پیشنهادی جدید:** `FAST_PIPE_REWRITE_SECURE` اولین گزینه است؛ سریع، سبک، بدون Function Runtime و مناسب کمترین هزینه.
+- 🔥 **مود پیشنهادی جدید:** `FAST_PIPE_LEGACY` مسیر پیش‌فرض Fast Pipe است؛ سریع، سبک، بدون Function Runtime و معمولاً سازگارتر برای اپ‌هایی مثل Instagram و YouTube.
 - 🧠 **Node mode برای کنترل کامل:** اگر throttle، timeout، log و ظرفیت قابل‌تنظیم می‌خوای، دو پروفایل Node آماده و یک حالت Custom داری.
 - 🔐 **توکن‌محور شدن اتصال به Vercel:** اسکریپت پروژه‌ها رو با Token/API می‌خونه، نه از روی لینک قدیمی پوشه `.vercel`.
 - 🧹 **بازسازی لینک لوکال:** اگر فولدر قبلاً دیپلوی داشته باشه، اسکریپت لینک محلی رو از روی پروژه انتخاب‌شده دوباره می‌سازه تا اشتباهی روی پروژه قبلی نره.
@@ -51,8 +51,8 @@
 
 این حالت پیشنهادی برای شروعه و داخل اینستالر دو مدل دارد:
 
-- `FAST PIPE COMPAT`: بدون هدر پسورد، با مسیر سخت/رندوم. بهترین گزینه برای سازگاری با اپ‌هایی مثل Instagram و YouTube.
-- `FAST PIPE SECURE`: با هدر اجباری `x-relay-key`. امن‌تر است، ولی ممکنه روی بعضی کلاینت‌ها یا اپ‌های پر-request سازگاری کمتری داشته باشد.
+- `FAST PIPE LEGACY`: مدل پیشنهادی با `/path/(.*)` و `$1` برای سازگاری بیشتر.
+- `FAST PIPE MODERN`: مدل رسمی‌تر Vercel با `/path/:path*`.
 
 در این مدل Vercel فقط Rewrite انجام میده؛ یعنی درخواست از Edge ورسل رد میشه و مستقیم به `TARGET_DOMAIN` فوروارد میشه. اینجا کد Node پروژه اجرا نمی‌شود، پس دیتایی که میاد و میره عملاً بدون پردازش، بدون throttle و بدون کنترل نرم‌افزاری از سمت ما عبور می‌کنه.
 
@@ -74,7 +74,7 @@
 - هزینه Fluid/Function/CPU/Memory برای این مود صفر است.
 - مصرفی که ممکنه ببینی مربوط به `Fast Data Transfer` و `Edge Requests` است، نه Fluid Compute.
 
-در `FAST PIPE COMPAT` هدر پسورد لازم نیست. برای امنیت، مسیر را سخت و رندوم انتخاب کن؛ مثلاً:
+در Fast Pipe، هدر پسورد اختیاری است. برای امنیت، مسیر را سخت و رندوم انتخاب کن؛ مثلاً:
 
 ```text
 /api-b7f39xrelay
@@ -82,7 +82,7 @@
 
 همین مسیر باید هم در اینستالر و هم در inbound سرور خارجی یکی باشد.
 
-در `FAST PIPE SECURE` کلاینت حتماً باید این هدر رو بفرسته:
+اگر موقع ساخت Fast Pipe مقدار `RELAY_KEY` وارد کنی، کلاینت حتماً باید این هدر رو بفرسته:
 
 ```json
 {
@@ -98,7 +98,7 @@
 
 **اگر Instagram/YouTube روی Fast Pipe خوب نبود:**
 
-- اول `FAST PIPE COMPAT` را تست کن، چون حذف header lock معمولاً سازگاری را بهتر می‌کند.
+- اول `FAST PIPE LEGACY` را تست کن، چون مدل خام‌تر rewrite معمولاً برای tunnel سازگاری بهتری دارد.
 - سمت کلاینت Mux را هم ON با concurrency پایین مثل 4 یا 8 تست کن، هم OFF تست کن. برای ویدئو همیشه Mux بهتر نیست.
 - اگر کلاینت heartbeat/keepalive دارد، 15 تا 20 ثانیه را تست کن. مقدار خیلی کم Edge Requests را بالا می‌برد.
 - روی سرور خارجی BBR را فعال نگه دار.
@@ -171,9 +171,9 @@
 
 ## 🎛️ مودهای دیپلوی داخل اینستالر
 
-### `[1] FAST PIPE COMPAT`
+### `[1] FAST PIPE LEGACY`
 
-نام داخلی پروفایل: `FAST_PIPE_REWRITE_COMPAT`
+نام داخلی پروفایل: `FAST_PIPE_LEGACY`
 
 **Rewrite (RECOMMENDED / NO FLUID COST / BEST COMPATIBILITY)**
 
@@ -182,23 +182,51 @@
 مراحلش ساده است:
 
 ۱. Scope رو انتخاب می‌کنی.
-۲. Preset اول یعنی `FAST PIPE COMPAT` رو انتخاب می‌کنی.
+۲. Preset اول یعنی `FAST PIPE LEGACY` رو انتخاب می‌کنی.
 ۳. `TARGET_DOMAIN` رو وارد می‌کنی.
 ۴. `RELAY_PATH` سخت و رندوم وارد می‌کنی، مثل `/api-b7f39xrelay`.
 ۵. همان path را در inbound سرور خارجی هم می‌گذاری.
 ۶. Confirm می‌کنی و Deploy انجام میشه.
 
-### `[2] FAST PIPE SECURE`
+### `[2] FAST PIPE MODERN`
 
-نام داخلی پروفایل: `FAST_PIPE_REWRITE_SECURE`
+نام داخلی پروفایل: `FAST_PIPE_MODERN`
 
-**Rewrite (NO FLUID COST / HEADER LOCKED)**
+**Rewrite (NO FLUID COST / OFFICIAL PATH SYNTAX)**
 
-مثل COMPAT است، ولی همه requestها باید هدر `x-relay-key` درست داشته باشند. اگر امنیت هدر می‌خوای خوبه؛ اگر Instagram/YouTube یا بعضی کلاینت‌ها بد کار کردند، COMPAT را تست کن.
+این مدل از syntax رسمی Vercel با `:path*` استفاده می‌کند. اگر Legacy روی یک مسیر خاص خوب جواب نداد، این مدل را تست کن.
 
-بعد از Deploy، اینستالر JSON آماده XHTTP Extra را با همان پسوردی که وارد کردی نشان می‌دهد.
+در هر دو Fast Pipe، `RELAY_KEY` اختیاری است. خالی بگذاری یعنی بدون هدر؛ مقدار بدهی یعنی کلاینت باید `x-relay-key` را بفرستد.
 
-### `[3] BALANCED`
+### `[3] FAST PIPE SIMPLE`
+
+نام داخلی پروفایل: `FAST_PIPE_SIMPLE`
+
+**Rewrite (SINGLE RULE / NO FLUID COST)**
+
+این مدل فقط یک rule با syntax قدیمی‌تر می‌سازد:
+
+```json
+{ "source": "/api/(.*)", "destination": "https://server:port/api/$1" }
+```
+
+در این مدل headerهای no-store، base path جدا، fallback landing و `x-relay-key` ساخته یا پرسیده نمی‌شود.
+
+### `[4] FAST PIPE SIMPLE MODERN`
+
+نام داخلی پروفایل: `FAST_PIPE_SIMPLE_MODERN`
+
+**Rewrite (SINGLE RULE / MODERN SYNTAX / NO FLUID COST)**
+
+این مدل فقط یک rule با syntax رسمی `:path*` می‌سازد:
+
+```json
+{ "source": "/api/:path*", "destination": "https://server:port/api/:path*" }
+```
+
+در این مدل هم headerهای no-store، base path جدا، fallback landing و `x-relay-key` ساخته یا پرسیده نمی‌شود.
+
+### `[5] BALANCED`
 
 نام داخلی پروفایل: `BALANCED_LOW_TIMEOUT`
 
@@ -213,7 +241,7 @@ Function Max Duration=800
 Function CPU=standard
 ```
 
-### `[4] MAX CONN`
+### `[6] MAX CONN`
 
 نام داخلی پروفایل: `MAX_STABILITY_HIGH_CONN`
 
@@ -228,7 +256,7 @@ Function Max Duration=800
 Function CPU=standard
 ```
 
-### `[5] CUSTOM`
+### `[7] CUSTOM`
 
 نام داخلی پروفایل: `CUSTOM_BUILD`
 
@@ -307,7 +335,7 @@ arn1,fra1
 
 برای Node mode.
 
-اگر پروژه با `FAST_PIPE_REWRITE_SECURE` ساخته شده باشه، لاگ و Live Log مربوط به Node وجود نداره و اسکریپت هم درست skip می‌کنه.
+اگر پروژه با یکی از حالت‌های `FAST_PIPE_REWRITE_*` ساخته شده باشه، لاگ و Live Log مربوط به Node وجود نداره و اسکریپت هم درست skip می‌کنه.
 
 **گزینه 14 چیه؟**
 
@@ -500,7 +528,7 @@ build-profile-20260507-153950.txt
 
 ## 💸 هزینه روی Vercel
 
-اگر دنبال کمترین هزینه هستی، اول `FAST_PIPE_REWRITE_SECURE` رو تست کن، چون Function Runtime ندارد و ENV/CPU/Duration هم برایش معنی ندارد.
+اگر دنبال کمترین هزینه هستی، اول `FAST_PIPE_LEGACY` رو تست کن، چون Function Runtime ندارد و ENV/CPU/Duration هم برایش معنی ندارد. اگر syntax رسمی‌تر Vercel می‌خواهی، بعدش `FAST_PIPE_MODERN` را تست کن.
 
 **هزینه در Rewrite mode:**
 

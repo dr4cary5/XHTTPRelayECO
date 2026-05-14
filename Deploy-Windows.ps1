@@ -106,19 +106,25 @@ function Choose-DeploymentMode {
   Write-Host "Choose deployment mode:" -ForegroundColor Cyan
   Write-Host "[0] Back"
   Write-Host ""
-  Write-Host "[1] FAST PIPE COMPAT  (Recommended / No Fluid cost / Best app compatibility)" -ForegroundColor Green
-  Write-Host "    Rewrite mode. Strict path + no-store headers. No x-relay-key; use a strong/random path."
+  Write-Host "[1] FAST PIPE LEGACY  (Recommended / Best compatibility / No Fluid cost)" -ForegroundColor Green
+  Write-Host "    Rewrite using /path/(.*) -> upstream/path/`$1. Best first test for video/sites/apps."
   Write-Host ""
-  Write-Host "[2] FAST PIPE SECURE  (No Fluid cost / Header locked)" -ForegroundColor Green
-  Write-Host "    Rewrite mode. Strict path + no-store headers + required x-relay-key."
+  Write-Host "[2] FAST PIPE MODERN  (Official Vercel syntax / No Fluid cost)" -ForegroundColor Green
+  Write-Host "    Rewrite using /path/:path* -> upstream/path/:path*. Cleaner routing."
   Write-Host ""
-  Write-Host "[3] BALANCED   (Node + Fluid ON)" -ForegroundColor Cyan
+  Write-Host "[3] FAST PIPE SIMPLE  (Legacy single rule / No headers / No Fluid cost)" -ForegroundColor Green
+  Write-Host "    Single rewrite only: /path/(.*) -> upstream/path/`$1. No headers, no key, no base path, no fallback."
+  Write-Host ""
+  Write-Host "[4] FAST PIPE SIMPLE MODERN  (Modern single rule / No headers / No Fluid cost)" -ForegroundColor Green
+  Write-Host "    Single rewrite only: /path/:path* -> upstream/path/:path*. No headers, no key, no base path, no fallback."
+  Write-Host ""
+  Write-Host "[5] BALANCED   (Node + Fluid ON)" -ForegroundColor Cyan
   Write-Host "    Lower timeout profile for normal usage. 256 conn | 5 MB/s up/down | 60s upstream | 800s function."
   Write-Host ""
-  Write-Host "[4] MAX CONN   (Node + Fluid ON)" -ForegroundColor Cyan
+  Write-Host "[6] MAX CONN   (Node + Fluid ON)" -ForegroundColor Cyan
   Write-Host "    Higher capacity profile. 512 conn | 10 MB/s up/down | 60s upstream | 800s function."
   Write-Host ""
-  Write-Host "[5] CUSTOM     (Manual)" -ForegroundColor Yellow
+  Write-Host "[7] CUSTOM     (Manual)" -ForegroundColor Yellow
   Write-Host "    Set runtime, Fluid, regions, CPU, duration, limits, timeout and logs yourself."
   Write-Host ""
 
@@ -133,9 +139,10 @@ function Choose-DeploymentMode {
     "1" {
       return @{
         Canceled = $false
-        ModeKey = "FAST_PIPE_REWRITE_COMPAT"
+        ModeKey = "FAST_PIPE_LEGACY"
         Runtime = "rewrite"
-        RewriteSecurity = "compat"
+        RewriteStyle = "legacy"
+        RewriteSecurity = "optional"
         FluidEnabled = $false
         MaxInflight = ""
         MaxUpBps = ""
@@ -147,71 +154,28 @@ function Choose-DeploymentMode {
         RequireRelayKey = $false
       }
     }
-    "2" {
-      return @{
-        Canceled = $false
-        ModeKey = "FAST_PIPE_REWRITE_SECURE"
-        Runtime = "rewrite"
-        RewriteSecurity = "secure"
-        FluidEnabled = $false
-        MaxInflight = ""
-        MaxUpBps = ""
-        MaxDownBps = ""
-        UpstreamTimeoutMs = "30000"
-        FunctionTimeoutSec = 0
-        FunctionCpu = ""
-        RunStressAfterDeploy = $false
-        RequireRelayKey = $true
-      }
-    }
-    "3" {
-      return @{
-        Canceled = $false
-        ModeKey = "BALANCED_LOW_TIMEOUT"
-        Runtime = "node"
-        RewriteSecurity = ""
-        FluidEnabled = $true
-        MaxInflight = "256"
-        MaxUpBps = "5242880"
-        MaxDownBps = "5242880"
-        UpstreamTimeoutMs = "60000"
-        FunctionTimeoutSec = 800
-        FunctionCpu = "standard"
-        RunStressAfterDeploy = $false
-        RequireRelayKey = $false
-      }
-    }
-    "4" {
-      return @{
-        Canceled = $false
-        ModeKey = "MAX_STABILITY_HIGH_CONN"
-        Runtime = "node"
-        RewriteSecurity = ""
-        FluidEnabled = $true
-        MaxInflight = "512"
-        MaxUpBps = "10485760"
-        MaxDownBps = "10485760"
-        UpstreamTimeoutMs = "60000"
-        FunctionTimeoutSec = 800
-        FunctionCpu = "standard"
-        RunStressAfterDeploy = $false
-        RequireRelayKey = $false
-      }
-    }
-    "5" {
+    "7" {
       $runtimePick = Read-Default "Runtime type (node/rewrite, 0 = Back)" "node"
       if ($runtimePick.Trim() -eq "0") {
         return @{ Canceled = $true; ModeKey = "__BACK__" }
       }
       $runtimeType = if ($runtimePick.Trim().ToLowerInvariant() -eq "rewrite") { "rewrite" } else { "node" }
+      $rewriteStyle = ""
       $rewriteSecurity = ""
       if ($runtimeType -eq "rewrite") {
         Write-Host ""
-        Write-Host "Custom rewrite security:" -ForegroundColor Cyan
-        Write-Host "[1] Compat  | no header key, use a strong/random path"
-        Write-Host "[2] Secure  | require x-relay-key header"
-        $secPick = Read-Default "Select rewrite security" "1"
-        $rewriteSecurity = if ($secPick -eq "2") { "secure" } else { "compat" }
+        Write-Host "Custom rewrite routing:" -ForegroundColor Cyan
+        Write-Host "[1] Legacy         | /path/(.*) -> upstream/path/`$1"
+        Write-Host "[2] Modern         | /path/:path* -> upstream/path/:path*"
+        Write-Host "[3] Simple         | single /path/(.*) -> upstream/path/`$1"
+        Write-Host "[4] Simple Modern  | single /path/:path* -> upstream/path/:path*"
+        Write-Host "[0] Back"
+        $routePick = Read-Default "Select rewrite routing" "1"
+        if ($routePick -eq "0") {
+          return @{ Canceled = $true; ModeKey = "__BACK__" }
+        }
+        $rewriteStyle = if ($routePick -eq "2") { "modern" } elseif ($routePick -eq "3") { "simplelegacy" } elseif ($routePick -eq "4") { "simplemodern" } else { "legacy" }
+        $rewriteSecurity = "optional"
       }
       $fluidEnabled = $false
       $maxInflight = ""
@@ -223,17 +187,25 @@ function Choose-DeploymentMode {
       if ($runtimeType -eq "node") {
         $fluidEnabled = Read-YesNo -Prompt "Enable Fluid Compute for this build" -DefaultYes $true
         $functionCpu = Choose-FunctionCpu -FluidEnabled $fluidEnabled
-        $maxInflight = Read-Required "MAX_INFLIGHT (example: 256)"
-        $maxUpBps = Read-Required "MAX_UP_BPS (bytes/sec, example: 5242880)"
-        $maxDownBps = Read-Required "MAX_DOWN_BPS (bytes/sec, example: 5242880)"
+        if ($functionCpu -eq "__BACK__") { return @{ Canceled = $true; ModeKey = "__BACK__" } }
+        $maxInflight = Read-Required "MAX_INFLIGHT (example: 256, 0 = Back)"
+        if ($maxInflight -eq "0") { return @{ Canceled = $true; ModeKey = "__BACK__" } }
+        $maxUpBps = Read-Required "MAX_UP_BPS (bytes/sec, example: 5242880, 0 = Back)"
+        if ($maxUpBps -eq "0") { return @{ Canceled = $true; ModeKey = "__BACK__" } }
+        $maxDownBps = Read-Required "MAX_DOWN_BPS (bytes/sec, example: 5242880, 0 = Back)"
+        if ($maxDownBps -eq "0") { return @{ Canceled = $true; ModeKey = "__BACK__" } }
         $upstreamTimeout = Read-Default "UPSTREAM_TIMEOUT_MS (ms)" "60000"
+        if ($upstreamTimeout -eq "0") { return @{ Canceled = $true; ModeKey = "__BACK__" } }
         $durationRange = if ($fluidEnabled) { "30..800" } else { "30..300" }
-        $fnTimeout = [int](Read-Default ("Function Max Duration seconds ({0})" -f $durationRange) "300")
+        $fnTimeoutRaw = Read-Default ("Function Max Duration seconds ({0}, 0 = Back)" -f $durationRange) "300"
+        if ($fnTimeoutRaw -eq "0") { return @{ Canceled = $true; ModeKey = "__BACK__" } }
+        $fnTimeout = [int]$fnTimeoutRaw
       }
       return @{
         Canceled = $false
         ModeKey = "CUSTOM_BUILD"
         Runtime = $runtimeType
+        RewriteStyle = $rewriteStyle
         RewriteSecurity = $rewriteSecurity
         FluidEnabled = $fluidEnabled
         MaxInflight = $maxInflight
@@ -246,12 +218,103 @@ function Choose-DeploymentMode {
         RequireRelayKey = $false
       }
     }
+    "2" {
+      return @{
+        Canceled = $false
+        ModeKey = "FAST_PIPE_MODERN"
+        Runtime = "rewrite"
+        RewriteStyle = "modern"
+        RewriteSecurity = "optional"
+        FluidEnabled = $false
+        MaxInflight = ""
+        MaxUpBps = ""
+        MaxDownBps = ""
+        UpstreamTimeoutMs = "30000"
+        FunctionTimeoutSec = 0
+        FunctionCpu = ""
+        RunStressAfterDeploy = $false
+        RequireRelayKey = $false
+      }
+    }
+    "3" {
+      return @{
+        Canceled = $false
+        ModeKey = "FAST_PIPE_SIMPLE"
+        Runtime = "rewrite"
+        RewriteStyle = "simplelegacy"
+        RewriteSecurity = "optional"
+        FluidEnabled = $false
+        MaxInflight = ""
+        MaxUpBps = ""
+        MaxDownBps = ""
+        UpstreamTimeoutMs = "30000"
+        FunctionTimeoutSec = 0
+        FunctionCpu = ""
+        RunStressAfterDeploy = $false
+        RequireRelayKey = $false
+      }
+    }
+    "4" {
+      return @{
+        Canceled = $false
+        ModeKey = "FAST_PIPE_SIMPLE_MODERN"
+        Runtime = "rewrite"
+        RewriteStyle = "simplemodern"
+        RewriteSecurity = "optional"
+        FluidEnabled = $false
+        MaxInflight = ""
+        MaxUpBps = ""
+        MaxDownBps = ""
+        UpstreamTimeoutMs = "30000"
+        FunctionTimeoutSec = 0
+        FunctionCpu = ""
+        RunStressAfterDeploy = $false
+        RequireRelayKey = $false
+      }
+    }
+    "5" {
+      return @{
+        Canceled = $false
+        ModeKey = "BALANCED_LOW_TIMEOUT"
+        Runtime = "node"
+        RewriteStyle = ""
+        RewriteSecurity = ""
+        FluidEnabled = $true
+        MaxInflight = "256"
+        MaxUpBps = "5242880"
+        MaxDownBps = "5242880"
+        UpstreamTimeoutMs = "60000"
+        FunctionTimeoutSec = 800
+        FunctionCpu = "standard"
+        RunStressAfterDeploy = $false
+        RequireRelayKey = $false
+      }
+    }
+    "6" {
+      return @{
+        Canceled = $false
+        ModeKey = "MAX_STABILITY_HIGH_CONN"
+        Runtime = "node"
+        RewriteStyle = ""
+        RewriteSecurity = ""
+        FluidEnabled = $true
+        MaxInflight = "512"
+        MaxUpBps = "10485760"
+        MaxDownBps = "10485760"
+        UpstreamTimeoutMs = "60000"
+        FunctionTimeoutSec = 800
+        FunctionCpu = "standard"
+        RunStressAfterDeploy = $false
+        RequireRelayKey = $false
+      }
+    }
     default {
       return @{
         Canceled = $false
-        ModeKey = "FAST_PIPE_REWRITE_COMPAT"
+        ModeKey = "FAST_PIPE_LEGACY"
         Runtime = "rewrite"
-        RewriteSecurity = "compat"
+        RewriteStyle = "legacy"
+        RewriteSecurity = "optional"
         FluidEnabled = $false
         MaxInflight = ""
         MaxUpBps = ""
@@ -382,20 +445,24 @@ function Choose-FunctionCpu([bool]$FluidEnabled) {
   Write-Host ""
   Write-Host "Choose Function CPU:" -ForegroundColor Cyan
   if ($FluidEnabled) {
+    Write-Host "[0] Back"
     Write-Host "[1] Standard    | 1 vCPU, 2 GB memory | predictable production workloads"
     Write-Host "[2] Performance | 2 vCPUs, 4 GB memory | latency-sensitive and SSR workloads"
     $pick = Read-Default "Select CPU" "1"
     switch ($pick) {
+      "0" { return "__BACK__" }
       "2" { return "performance" }
       default { return "standard" }
     }
   }
 
+  Write-Host "[0] Back"
   Write-Host "[1] Basic       | 0.6 vCPU, 1 GB memory | cost-effective lightweight apps and APIs"
   Write-Host "[2] Standard    | 1 vCPU, 1.7 GB memory | predictable production workloads"
   Write-Host "[3] Performance | 1.7 vCPUs, 3 GB memory | latency-sensitive and SSR workloads"
   $pickNoFluid = Read-Default "Select CPU" "2"
   switch ($pickNoFluid) {
+    "0" { return "__BACK__" }
     "1" { return "standard_legacy" }
     "3" { return "performance" }
     default { return "standard" }
@@ -613,15 +680,9 @@ function Load-TokenSecure([string]$Path) {
 function Invoke-NativeSafe {
   param(
     [Parameter(Mandatory = $true)][string]$FilePath,
-    [Parameter(Mandatory = $true)][string[]]$Arguments
+    [Parameter(Mandatory = $true)][string[]]$Arguments,
+    [int]$TimeoutSec = 600
   )
-
-  $psi = New-Object System.Diagnostics.ProcessStartInfo
-  $psi.FileName = $FilePath
-  $psi.WorkingDirectory = (Get-Location).Path
-  $psi.UseShellExecute = $false
-  $psi.RedirectStandardOutput = $true
-  $psi.RedirectStandardError = $true
 
   # PowerShell 5.1-compatible argument handling
   $escaped = $Arguments | ForEach-Object {
@@ -631,16 +692,127 @@ function Invoke-NativeSafe {
       $_
     }
   }
+  $psi = New-Object System.Diagnostics.ProcessStartInfo
+  $psi.FileName = $FilePath
+  $psi.WorkingDirectory = (Get-Location).Path
+  $psi.UseShellExecute = $false
+  $psi.CreateNoWindow = $true
+  $psi.RedirectStandardOutput = $true
+  $psi.RedirectStandardError = $true
+  $psi.StandardOutputEncoding = [System.Text.Encoding]::UTF8
+  $psi.StandardErrorEncoding = [System.Text.Encoding]::UTF8
   $psi.Arguments = ($escaped -join ' ')
 
   $proc = New-Object System.Diagnostics.Process
   $proc.StartInfo = $psi
   [void]$proc.Start()
+  $stdoutTask = $proc.StandardOutput.ReadToEndAsync()
+  $stderrTask = $proc.StandardError.ReadToEndAsync()
+  $timeoutMs = [Math]::Max(1, $TimeoutSec) * 1000
+  $finished = $proc.WaitForExit($timeoutMs)
+  if (-not $finished) {
+    try { $proc.Kill() } catch {}
+    try { $proc.WaitForExit() } catch {}
+    $safeArgs = @()
+    for ($i = 0; $i -lt $Arguments.Count; $i++) {
+      if ($i -gt 0 -and [string]$Arguments[$i - 1] -eq "--token") {
+        $safeArgs += "***"
+      } elseif (-not [string]::IsNullOrWhiteSpace($env:VERCEL_TOKEN) -and [string]$Arguments[$i] -eq [string]$env:VERCEL_TOKEN) {
+        $safeArgs += "***"
+      } else {
+        $safeArgs += [string]$Arguments[$i]
+      }
+    }
+    $stdout = ""
+    $stderr = ""
+    try { $stdout = $stdoutTask.GetAwaiter().GetResult() } catch {}
+    try { $stderr = $stderrTask.GetAwaiter().GetResult() } catch {}
+    $lines = @()
+    if (-not [string]::IsNullOrWhiteSpace($stdout)) { $lines += ($stdout -split "`r?`n" | Where-Object { $_ -ne "" }) }
+    if (-not [string]::IsNullOrWhiteSpace($stderr)) { $lines += ($stderr -split "`r?`n" | Where-Object { $_ -ne "" }) }
+    $lines += "Command timed out after $TimeoutSec seconds: $FilePath $($safeArgs -join ' ')"
+    return @{
+      Output = @($lines)
+      ExitCode = 124
+    }
+  }
 
-  $stdout = $proc.StandardOutput.ReadToEnd()
-  $stderr = $proc.StandardError.ReadToEnd()
   $proc.WaitForExit()
+  $stdout = $stdoutTask.GetAwaiter().GetResult()
+  $stderr = $stderrTask.GetAwaiter().GetResult()
+  $lines = @()
+  if (-not [string]::IsNullOrWhiteSpace($stdout)) {
+    $lines += ($stdout -split "`r?`n" | Where-Object { $_ -ne "" })
+  }
+  if (-not [string]::IsNullOrWhiteSpace($stderr)) {
+    $lines += ($stderr -split "`r?`n" | Where-Object { $_ -ne "" })
+  }
 
+  return @{
+    Output = @($lines)
+    ExitCode = $proc.ExitCode
+  }
+}
+
+function Invoke-NativeSafeWithInput {
+  param(
+    [Parameter(Mandatory = $true)][string]$FilePath,
+    [Parameter(Mandatory = $true)][string[]]$Arguments,
+    [string]$InputText = "",
+    [int]$TimeoutSec = 120
+  )
+
+  $escaped = $Arguments | ForEach-Object {
+    if ($_ -match '[\s"]') {
+      '"' + ($_ -replace '"', '\"') + '"'
+    } else {
+      $_
+    }
+  }
+  $psi = New-Object System.Diagnostics.ProcessStartInfo
+  $psi.FileName = $FilePath
+  $psi.WorkingDirectory = (Get-Location).Path
+  $psi.UseShellExecute = $false
+  $psi.CreateNoWindow = $true
+  $psi.RedirectStandardInput = $true
+  $psi.RedirectStandardOutput = $true
+  $psi.RedirectStandardError = $true
+  $psi.StandardOutputEncoding = [System.Text.Encoding]::UTF8
+  $psi.StandardErrorEncoding = [System.Text.Encoding]::UTF8
+  $psi.Arguments = ($escaped -join ' ')
+
+  $proc = New-Object System.Diagnostics.Process
+  $proc.StartInfo = $psi
+  [void]$proc.Start()
+  $stdoutTask = $proc.StandardOutput.ReadToEndAsync()
+  $stderrTask = $proc.StandardError.ReadToEndAsync()
+  if (-not [string]::IsNullOrEmpty($InputText)) {
+    $proc.StandardInput.WriteLine($InputText)
+  }
+  $proc.StandardInput.Close()
+
+  $timeoutMs = [Math]::Max(1, $TimeoutSec) * 1000
+  $finished = $proc.WaitForExit($timeoutMs)
+  if (-not $finished) {
+    try { $proc.Kill() } catch {}
+    try { $proc.WaitForExit() } catch {}
+    $stdout = ""
+    $stderr = ""
+    try { $stdout = $stdoutTask.GetAwaiter().GetResult() } catch {}
+    try { $stderr = $stderrTask.GetAwaiter().GetResult() } catch {}
+    $lines = @()
+    if (-not [string]::IsNullOrWhiteSpace($stdout)) { $lines += ($stdout -split "`r?`n" | Where-Object { $_ -ne "" }) }
+    if (-not [string]::IsNullOrWhiteSpace($stderr)) { $lines += ($stderr -split "`r?`n" | Where-Object { $_ -ne "" }) }
+    $lines += "Command timed out after $TimeoutSec seconds."
+    return @{
+      Output = @($lines)
+      ExitCode = 124
+    }
+  }
+
+  $proc.WaitForExit()
+  $stdout = $stdoutTask.GetAwaiter().GetResult()
+  $stderr = $stderrTask.GetAwaiter().GetResult()
   $lines = @()
   if (-not [string]::IsNullOrWhiteSpace($stdout)) {
     $lines += ($stdout -split "`r?`n" | Where-Object { $_ -ne "" })
@@ -1001,7 +1173,7 @@ function Link-VercelProject([string]$ProjectName, [string]$Scope) {
 
 function Set-VercelEnv([string]$Name, [string]$Value, [string]$Target, [string]$Scope) {
   $Scope = Normalize-ScopeForCli -Scope $Scope
-  $args = @("env", "add", $Name, $Target, "--value", $Value, "--force", "--yes", "--no-sensitive")
+  $args = @("env", "add", $Name, $Target, "--value", $Value, "--force", "--yes")
   if (-not [string]::IsNullOrWhiteSpace($Scope)) { $args += @("--scope", $Scope) }
   $args += (Get-VercelTokenArgs)
   $res = Invoke-NativeSafe -FilePath $VercelExe -Arguments $args
@@ -1153,29 +1325,53 @@ function Restore-VercelConfigAfterDeploy($state) {
   # keep local files clean after deploy
 }
 
-function Build-RewriteSecureVercelJson([string]$TargetDomain, [string]$RelayPath, [string]$PublicRelayPath, [string]$RelayKey) {
+function Build-RewriteSecureVercelJson([string]$TargetDomain, [string]$RelayPath, [string]$PublicRelayPath, [string]$RelayKey, [string]$RewriteStyle = "legacy") {
+  $style = ([string]$RewriteStyle).Trim().ToLowerInvariant()
+  if ($style -eq "simple") { $style = "simplelegacy" }
+  if ($style -notin @("legacy", "modern", "simplelegacy", "simplemodern")) { $style = "legacy" }
+  $isSimple = $style -in @("simplelegacy", "simplemodern")
+
   $sourceBase = Convert-PathToVercelSourceBase -PathValue $PublicRelayPath
-  $sourceAny = Convert-PathToVercelSource -PathValue $PublicRelayPath
-  $destinationBase = Convert-PathToVercelDestinationBase -TargetDomain $TargetDomain -PathValue $RelayPath
-  $destinationAny = Convert-PathToVercelDestination -TargetDomain $TargetDomain -PathValue $RelayPath
-  $rk = ([string]$RelayKey).Trim()
+  $target = ([string]$TargetDomain).TrimEnd("/")
+  $up = Normalize-PathLike -PathValue $RelayPath
+  if ([string]::IsNullOrWhiteSpace($up) -or $up -eq "/") { $up = "/api" }
+  $destinationBase = "$target$up/"
+  $sourceAny = ""
+  $destinationAny = ""
+  if ($style -eq "modern" -or $style -eq "simplemodern") {
+    $sourceAny = Convert-PathToVercelSource -PathValue $PublicRelayPath
+    $destinationAny = "$target$up/:path*"
+  } else {
+    $sourceAny = "$sourceBase/(.*)"
+    $destinationAny = "$target$up/`$1"
+  }
+  $rk = if ($isSimple) { "" } else { ([string]$RelayKey).Trim() }
   $headers = @()
-  foreach ($src in @($sourceBase, $sourceAny)) {
-    $headers += [ordered]@{
-      source = $src
-      headers = @(
-        [ordered]@{ key = "Cache-Control"; value = "no-store, no-cache, must-revalidate, max-age=0" },
-        [ordered]@{ key = "CDN-Cache-Control"; value = "no-store" },
-        [ordered]@{ key = "Vercel-CDN-Cache-Control"; value = "no-store" }
-      )
+  if (-not $isSimple) {
+    foreach ($src in @($sourceBase, $sourceAny)) {
+      $headers += [ordered]@{
+        source = $src
+        headers = @(
+          [ordered]@{ key = "Cache-Control"; value = "no-store, no-cache, must-revalidate, max-age=0" },
+          [ordered]@{ key = "CDN-Cache-Control"; value = "no-store" },
+          [ordered]@{ key = "Vercel-CDN-Cache-Control"; value = "no-store" }
+        )
+      }
     }
   }
   $rewrites = @()
-  for ($i = 0; $i -lt 2; $i++) {
-    $src = @($sourceBase, $sourceAny)[$i]
-    $dst = @($destinationBase, $destinationAny)[$i]
+  $rewritePairs = if ($isSimple) {
+    @(@{ Source = $sourceAny; Destination = $destinationAny })
+  } else {
+    @(
+      @{ Source = $sourceAny; Destination = $destinationAny },
+      @{ Source = $sourceBase; Destination = $destinationBase }
+    )
+  }
+  foreach ($pair in $rewritePairs) {
+    $src = [string]$pair.Source
+    $dst = [string]$pair.Destination
     if (-not [string]::IsNullOrWhiteSpace($rk)) {
-      # Secure fast-pipe mode: strict relay path only, and only when x-relay-key matches.
       $rewrites += [ordered]@{
         source = $src
         has = @(
@@ -1188,27 +1384,39 @@ function Build-RewriteSecureVercelJson([string]$TargetDomain, [string]$RelayPath
         destination = $dst
       }
     } else {
-      # Compat fast-pipe mode: strict relay path only, no header lock.
       $rewrites += [ordered]@{
         source = $src
         destination = $dst
       }
     }
   }
+  if (-not $isSimple) {
+    $rewrites += [ordered]@{
+      source = "/(.*)"
+      destination = "/index.html"
+    }
+  }
   $obj = [ordered]@{
     version = 2
-    headers = $headers
     rewrites = $rewrites
     trailingSlash = $false
+  }
+  if ($headers.Count -gt 0) {
+    $obj = [ordered]@{
+      version = 2
+      headers = $headers
+      rewrites = $rewrites
+      trailingSlash = $false
+    }
   }
   return ($obj | ConvertTo-Json -Depth 20)
 }
 
-function Prepare-RewriteSecureConfigForDeploy([string]$TargetDomain, [string]$RelayPath, [string]$PublicRelayPath, [string]$RelayKey) {
+function Prepare-RewriteSecureConfigForDeploy([string]$TargetDomain, [string]$RelayPath, [string]$PublicRelayPath, [string]$RelayKey, [string]$RewriteStyle = "legacy") {
   $vercelPath = Join-Path $scriptDir "vercel.json"
   $original = ""
   if (Test-Path $vercelPath) { $original = Get-Content -Path $vercelPath -Raw }
-  $json = Build-RewriteSecureVercelJson -TargetDomain $TargetDomain -RelayPath $RelayPath -PublicRelayPath $PublicRelayPath -RelayKey $RelayKey
+  $json = Build-RewriteSecureVercelJson -TargetDomain $TargetDomain -RelayPath $RelayPath -PublicRelayPath $PublicRelayPath -RelayKey $RelayKey -RewriteStyle $RewriteStyle
   $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
   [System.IO.File]::WriteAllText($vercelPath, $json, $utf8NoBom)
   return @{
@@ -1225,7 +1433,8 @@ function Deploy-Production(
   [string]$TargetDomain = "",
   [string]$RelayPath = "",
   [string]$PublicRelayPath = "",
-  [string]$RelayKey = ""
+  [string]$RelayKey = "",
+  [string]$RewriteStyle = "legacy"
 ) {
   Write-Step "Deploying to production..."
   $Scope = Normalize-ScopeForCli -Scope $Scope
@@ -1242,11 +1451,11 @@ function Deploy-Production(
     }
 
     if ($Runtime -eq "rewrite") {
-      $vercelRandomizeState = Prepare-RewriteSecureConfigForDeploy -TargetDomain $TargetDomain -RelayPath $RelayPath -PublicRelayPath $PublicRelayPath -RelayKey $RelayKey
+      $vercelRandomizeState = Prepare-RewriteSecureConfigForDeploy -TargetDomain $TargetDomain -RelayPath $RelayPath -PublicRelayPath $PublicRelayPath -RelayKey $RelayKey -RewriteStyle $RewriteStyle
       if ([string]::IsNullOrWhiteSpace(([string]$RelayKey).Trim())) {
-        Write-Host "Rewrite mode: no relay key set (no x-relay-key required)." -ForegroundColor DarkYellow
+        Write-Host ("Rewrite mode ({0}): no relay key set (no x-relay-key required)." -f $RewriteStyle) -ForegroundColor DarkYellow
       } else {
-        Write-Host "Rewrite secure mode: x-relay-key lock enabled." -ForegroundColor DarkYellow
+        Write-Host ("Rewrite mode ({0}): x-relay-key lock enabled." -f $RewriteStyle) -ForegroundColor DarkYellow
       }
     } else {
       $vercelRandomizeState = Prepare-RandomizedVercelConfigForDeploy
@@ -1258,7 +1467,8 @@ function Deploy-Production(
     if (-not [string]::IsNullOrWhiteSpace($Scope)) { $args += @("--scope", $Scope) }
     $args += (Get-VercelTokenArgs)
 
-    $result = Invoke-NativeSafe -FilePath $VercelExe -Arguments $args
+    Write-Host "Uploading/building on Vercel. This can take 1-3 minutes for some projects..." -ForegroundColor DarkYellow
+    $result = Invoke-NativeSafe -FilePath $VercelExe -Arguments $args -TimeoutSec 1200
     $lines = $result.Output
     if ($result.ExitCode -ne 0) {
       $errText = (($lines | Out-String).Trim())
@@ -1354,7 +1564,7 @@ function Show-RewriteClientGuidance($cfg, $deployInfo) {
   if ($null -eq $cfg -or $cfg.Runtime -ne "rewrite") { return }
   Write-Host ""
   Write-Host "FAST PIPE zero-compute notes:" -ForegroundColor Yellow
-  Write-Host " - This deploy uses strict-path Vercel rewrites, not Node Functions." -ForegroundColor Cyan
+  Write-Host (" - This deploy uses {0} Vercel rewrites, not Node Functions." -f $cfg.RewriteStyle) -ForegroundColor Cyan
   Write-Host " - No Fluid/Function CPU/Memory/Duration is used." -ForegroundColor Cyan
   Write-Host " - no-store headers were added for the relay path to reduce CDN/cache interference." -ForegroundColor Cyan
   Write-Host " - There is still no Node throttle, retry, timeout, request log, or concurrency control in rewrite mode." -ForegroundColor DarkYellow
@@ -1362,7 +1572,7 @@ function Show-RewriteClientGuidance($cfg, $deployInfo) {
   Write-Host "Client setup:" -ForegroundColor Yellow
   Write-Host (" - Host: {0}" -f ([string]$deployInfo.Alias -replace '^https?://', '').TrimEnd("/")) -ForegroundColor Cyan
   Write-Host (" - Path: {0}" -f $cfg.PublicRelayPath) -ForegroundColor Cyan
-  if ($cfg.RewriteSecurity -eq "secure" -and -not [string]::IsNullOrWhiteSpace([string]$cfg.RelayKey)) {
+  if (-not [string]::IsNullOrWhiteSpace([string]$cfg.RelayKey)) {
     Write-Host " - XHTTP Extra: use the JSON header below." -ForegroundColor Cyan
     Write-Host ""
     Write-Host "XHTTP Extra (client) because x-relay-key is enabled:" -ForegroundColor Yellow
@@ -1373,7 +1583,7 @@ function Show-RewriteClientGuidance($cfg, $deployInfo) {
     Write-Host '  }' -ForegroundColor Cyan
     Write-Host '}' -ForegroundColor Cyan
   } else {
-    Write-Host " - No x-relay-key header is required in COMPAT mode." -ForegroundColor Green
+    Write-Host " - No x-relay-key header is required." -ForegroundColor Green
     Write-Host " - Use a strong/random path on both this installer and your upstream inbound for privacy." -ForegroundColor DarkYellow
   }
   Write-Host ""
@@ -1424,13 +1634,22 @@ function Collect-NewDeploymentConfig([string]$DefaultScope) {
   $maxUpBps = $mode.MaxUpBps
   $maxDownBps = $mode.MaxDownBps
   $upstreamTimeoutMs = $mode.UpstreamTimeoutMs
-  $targetDomain = Read-Required "TARGET_DOMAIN (MUST be your foreign server inbound domain+port, example: https://your-domain.com:443)"
+  $targetDomain = Read-Required "TARGET_DOMAIN (MUST be your foreign server inbound domain+port, example: https://your-domain.com:443, 0 = Back)"
+  if ($targetDomain -eq "0") {
+    Write-Host "Canceled. Returning to main menu." -ForegroundColor DarkYellow
+    return $null
+  }
   $selectedRegion = ""
   if ($mode.Runtime -eq "node") {
     $selectedRegion = Choose-FunctionRegion -TargetDomain $targetDomain
   }
   Write-Host "RELAY_PATH guide: open your foreign server inbound, set a Path starting with '/'. Enter EXACT same value here." -ForegroundColor DarkYellow
-  $relayPath = Normalize-PathLike (Read-Required "RELAY_PATH (example: /api or /freedom)")
+  $relayPathInput = Read-Required "RELAY_PATH (example: /api or /freedom, 0 = Back)"
+  if ($relayPathInput -eq "0") {
+    Write-Host "Canceled. Returning to main menu." -ForegroundColor DarkYellow
+    return $null
+  }
+  $relayPath = Normalize-PathLike $relayPathInput
   $publicRelayPath = $relayPath
   Write-Host ("PUBLIC_RELAY_PATH auto-set to RELAY_PATH: {0}" -f $publicRelayPath) -ForegroundColor DarkCyan
   $landingTemplate = Read-Optional "LANDING_TEMPLATE (optional template folder name; empty = random each build)"
@@ -1444,13 +1663,22 @@ function Collect-NewDeploymentConfig([string]$DefaultScope) {
   }
   $relayKey = ""
   if ($mode.Runtime -eq "rewrite") {
-    if ($mode.RewriteSecurity -eq "secure") {
-      Write-Host "FAST PIPE SECURE: x-relay-key is required." -ForegroundColor DarkYellow
-      Write-Host "The client MUST send this header on every request. If some apps fail, test FAST PIPE COMPAT with a strong random path." -ForegroundColor DarkYellow
-      $relayKey = Read-Required "RELAY_KEY (required for secure rewrite)"
+    if ($mode.RewriteStyle -eq "simplelegacy" -or $mode.RewriteStyle -eq "simplemodern") {
+      Write-Host "FAST PIPE SIMPLE: no headers will be configured." -ForegroundColor Green
+      if ($mode.RewriteStyle -eq "simplemodern") {
+        Write-Host "No x-relay-key prompt, no cache headers, no base path, no fallback rule. It is exactly one modern rewrite rule." -ForegroundColor DarkYellow
+      } else {
+        Write-Host "No x-relay-key prompt, no cache headers, no base path, no fallback rule. It is exactly one legacy rewrite rule." -ForegroundColor DarkYellow
+      }
+      $relayKey = ""
     } else {
-      Write-Host "FAST PIPE COMPAT: no x-relay-key will be required." -ForegroundColor Green
-      Write-Host "For privacy/security, use a strong random RELAY_PATH like /api-b7f39xrelay and set the same path on your upstream inbound." -ForegroundColor DarkYellow
+      Write-Host "RELAY_KEY is optional in Fast Pipe." -ForegroundColor DarkYellow
+      Write-Host "Leave it empty for no x-relay-key. If you set it, the client MUST send header x-relay-key with the exact same value." -ForegroundColor DarkYellow
+      $relayKey = Read-Optional "RELAY_KEY (optional; empty = no x-relay-key required, 0 = Back)"
+      if ($relayKey -eq "0") {
+        Write-Host "Canceled. Returning to main menu." -ForegroundColor DarkYellow
+        return $null
+      }
     }
   }
 
@@ -1464,7 +1692,8 @@ function Collect-NewDeploymentConfig([string]$DefaultScope) {
     Write-Host ("FUNCTION_TIMEOUT_SEC     = {0}" -f $mode.FunctionTimeoutSec)
     Write-Host ("FUNCTION_CPU             = {0}" -f $mode.FunctionCpu)
   } else {
-    Write-Host ("REWRITE_MODE = {0}" -f $(if ($mode.RewriteSecurity -eq "secure") { "secure header lock" } else { "compat no-header" }))
+    Write-Host ("REWRITE_STYLE = {0}" -f $mode.RewriteStyle)
+    Write-Host ("REWRITE_SECURITY = {0}" -f $(if ([string]::IsNullOrWhiteSpace($relayKey)) { "no x-relay-key" } else { "x-relay-key required" }))
   }
   Write-Host "RELAY_PATH    = $relayPath"
   Write-Host "PUBLIC_RELAY_PATH = $publicRelayPath"
@@ -1490,7 +1719,7 @@ function Collect-NewDeploymentConfig([string]$DefaultScope) {
     Write-Host "FUNCTION_REGION            = $selectedRegion"
   } else {
     Write-Host "REWRITE_CACHE_HEADERS      = no-store / CDN no-store"
-    Write-Host "REWRITE_PATH_MODE          = strict path only (no catch-all)"
+    Write-Host ("REWRITE_PATH_MODE          = {0}" -f $mode.RewriteStyle)
     Write-Host "REWRITE_NOTE               = no Vercel ENV, Fluid, CPU, Function Region, or Max Duration will be configured."
   }
 
@@ -1499,6 +1728,7 @@ function Collect-NewDeploymentConfig([string]$DefaultScope) {
     Scope = $scope
     DeployMode = $mode.ModeKey
     Runtime = $mode.Runtime
+    RewriteStyle = $mode.RewriteStyle
     RewriteSecurity = $mode.RewriteSecurity
     FluidEnabled = [bool]$mode.FluidEnabled
     FunctionTimeoutSec = [int]$mode.FunctionTimeoutSec
@@ -1533,6 +1763,7 @@ function Export-ShareableConfigSummary($cfg, [string]$AliasUrl = "") {
     $lines += "function_timeout_sec=$($cfg.FunctionTimeoutSec)"
     $lines += "function_cpu=$($cfg.FunctionCpu)"
   } else {
+    $lines += "rewrite_style=$($cfg.RewriteStyle)"
     $lines += "rewrite_security=$($cfg.RewriteSecurity)"
   }
   $authState = "unknown"
@@ -1555,7 +1786,7 @@ function Export-ShareableConfigSummary($cfg, [string]$AliasUrl = "") {
     $lines += "error_log_min_interval_ms=$($cfg.ErrorLogMinIntervalMs)"
   } else {
     $lines += "rewrite_config=vercel_json_only"
-    $lines += "rewrite_path_mode=strict"
+    $lines += "rewrite_path_mode=$($cfg.RewriteStyle)"
     $lines += "rewrite_cache_headers=no-store"
     $lines += "vercel_env=not_required"
   }
@@ -1600,14 +1831,14 @@ function Run-NewDeploymentFlow([string]$DefaultScope) {
   if ($cfg.Runtime -eq "node") {
     $null = Apply-ProjectRuntimeSettings -ProjectName $cfg.ProjectName -Scope $cfg.Scope -TokenStorePath $tokenStorePath -Region $cfg.Region -FunctionTimeoutSec $cfg.FunctionTimeoutSec -FluidEnabled $cfg.FluidEnabled -FunctionCpu $cfg.FunctionCpu
   }
-  $deployInfo = Deploy-Production -Scope $cfg.Scope -Region $cfg.Region -Runtime $cfg.Runtime -TargetDomain $cfg.TargetDomain -RelayPath $cfg.RelayPath -PublicRelayPath $cfg.PublicRelayPath -RelayKey $cfg.RelayKey
+  $deployInfo = Deploy-Production -Scope $cfg.Scope -Region $cfg.Region -Runtime $cfg.Runtime -TargetDomain $cfg.TargetDomain -RelayPath $cfg.RelayPath -PublicRelayPath $cfg.PublicRelayPath -RelayKey $cfg.RelayKey -RewriteStyle $cfg.RewriteStyle
   $cfg.VercelAuthentication = [string]$script:LastVercelAuthStatus
   Show-DeploySummary $deployInfo
   Show-RewriteClientGuidance -cfg $cfg -deployInfo $deployInfo
   Export-ShareableConfigSummary -cfg $cfg -AliasUrl $deployInfo.Alias
   $runTests = Read-Default "Run essential health/smoke tests now? (Y/n)" "y"
   if ($runTests.ToLowerInvariant() -ne "n") {
-    Run-HealthAndSmokeChecks -ProjectName $cfg.ProjectName -RelayPath $cfg.PublicRelayPath -Runtime $cfg.Runtime
+    Run-HealthAndSmokeChecks -ProjectName $cfg.ProjectName -RelayPath $cfg.PublicRelayPath -Runtime $cfg.Runtime -RelayKey $cfg.RelayKey
     if ($cfg.RunStressAfterDeploy) {
       Write-Host "Running load-test lite pass automatically..." -ForegroundColor Yellow
       Run-LoadTestLite -ProjectName $cfg.ProjectName -RelayPath $cfg.PublicRelayPath
@@ -1718,16 +1949,16 @@ function Run-UpdateEnvFlow([string]$Scope) {
 
   while ($true) {
     Show-EnvEditTable -Rows $rows -PendingChanges $pending
-    $pick = Read-Host "Select ENV number, A, C, or 0"
-    if ([string]::IsNullOrWhiteSpace($pick)) { continue }
+    $pick = Read-Default "Select ENV number, A, C, or 0" "0"
     $p = $pick.Trim()
     if ($p -eq "0") {
       Write-Host "Canceled. No ENV changes applied." -ForegroundColor DarkYellow
       return $null
     }
     if ($p.ToLowerInvariant() -eq "a") {
-      $newKey = Read-Required "New ENV key"
+      $newKey = Read-Required "New ENV key (0 = Back)"
       $newKey = $newKey.Trim()
+      if ($newKey -eq "0") { continue }
       if ($newKey -notmatch '^[A-Za-z_][A-Za-z0-9_]*$') {
         Write-Host "Invalid ENV key. Use letters, numbers and underscore; first char must not be a number." -ForegroundColor Red
         continue
@@ -1818,11 +2049,11 @@ function Ensure-LinkedToProject([string]$ProjectName, [string]$Scope) {
   if ([string]::IsNullOrWhiteSpace($ProjectName)) {
     throw "Project name is required."
   }
+  Write-Step "Linking local folder to Vercel project from token/API..."
   $token = Get-VercelApiToken -TokenStorePath $tokenStorePath
   if (-not [string]::IsNullOrWhiteSpace($token)) {
     $apiInfo = Resolve-ProjectApiInfo -ProjectName $ProjectName -Scope $Scope -Token $token
     if ($null -ne $apiInfo -and -not [string]::IsNullOrWhiteSpace([string]$apiInfo.Id) -and -not [string]::IsNullOrWhiteSpace([string]$apiInfo.AccountId)) {
-      Write-Step "Linking local folder to Vercel project from token/API..."
       Clear-LocalVercelProjectLink -ProjectRoot $scriptDir
       Write-LocalVercelProjectLink -ProjectName $ProjectName -ProjectId ([string]$apiInfo.Id) -OrgId ([string]$apiInfo.AccountId) -ProjectRoot $scriptDir
       if ($apiInfo.PSObject.Properties.Name -contains "Scope" -and -not [string]::IsNullOrWhiteSpace([string]$apiInfo.Scope)) {
@@ -2131,8 +2362,9 @@ function Select-ProjectOrNewForFirstRun([string]$Scope, [string]$TokenStorePath 
   $newIndex = $projects.Count + 1
   Write-Host ("[{0}] Deploy as NEW project" -f $newIndex)
 
+  $defaultChoice = if ($projects.Count -gt 0) { "1" } else { [string]$newIndex }
   while ($true) {
-    $choiceRaw = Read-Host "Select one option"
+    $choiceRaw = Read-Default "Select one option" $defaultChoice
     $n = 0
     if (-not [int]::TryParse($choiceRaw, [ref]$n)) {
       Write-Host "Invalid number." -ForegroundColor Red
@@ -2189,7 +2421,7 @@ function Invoke-VercelApiGet([string]$Path, [string]$Token, [string]$Scope) {
     if ($url.Contains("?")) { $url = "$url&$scopeQuery" } else { $url = "$url?$scopeQuery" }
   }
   $headers = @{ Authorization = "Bearer $Token" }
-  return Invoke-RestMethod -Method Get -Uri $url -Headers $headers
+  return Invoke-RestMethod -Method Get -Uri $url -Headers $headers -TimeoutSec 45
 }
 
 function Invoke-VercelApiPatch([string]$Path, [string]$Token, [string]$Scope, [hashtable]$Body) {
@@ -2206,7 +2438,7 @@ function Invoke-VercelApiPatch([string]$Path, [string]$Token, [string]$Scope, [h
     "Content-Type" = "application/json"
   }
   $json = $Body | ConvertTo-Json -Depth 20
-  return Invoke-RestMethod -Method Patch -Uri $url -Headers $headers -Body $json
+  return Invoke-RestMethod -Method Patch -Uri $url -Headers $headers -Body $json -TimeoutSec 45
 }
 
 function Invoke-VercelApiDelete([string]$Path, [string]$Token, [string]$Scope) {
@@ -2219,7 +2451,7 @@ function Invoke-VercelApiDelete([string]$Path, [string]$Token, [string]$Scope) {
     if ($url.Contains("?")) { $url = "$url&$scopeQuery" } else { $url = "$url?$scopeQuery" }
   }
   $headers = @{ Authorization = "Bearer $Token" }
-  return Invoke-RestMethod -Method Delete -Uri $url -Headers $headers
+  return Invoke-RestMethod -Method Delete -Uri $url -Headers $headers -TimeoutSec 45
 }
 
 function Invoke-VercelApiGetJsonLines([string]$Path, [string]$Token, [string]$Scope) {
@@ -3150,6 +3382,21 @@ function Remove-SelectedProject([string]$ProjectName, [string]$Scope, [string]$T
       }
     }
   }
+
+  Write-Host "API delete did not complete. Trying Vercel CLI delete fallback..." -ForegroundColor DarkYellow
+  $cliArgs = @("project", "rm", $ProjectName)
+  if (-not [string]::IsNullOrWhiteSpace($Scope)) { $cliArgs += @("--scope", $Scope) }
+  $cliArgs += @("--token", $token, "--no-color")
+  $cliResult = Invoke-NativeSafeWithInput -FilePath $VercelExe -Arguments $cliArgs -InputText "y" -TimeoutSec 180
+  $cliText = ($cliResult.Output | Out-String)
+  if ($cliResult.ExitCode -eq 0 -and $cliText -match "(?i)(Success|removed)") {
+    Write-Host ("Project deleted: {0}" -f $ProjectName) -ForegroundColor Green
+    Unlink-LocalProjectIfMatches -ProjectName $ProjectName -ProjectRoot $scriptDir
+    return $true
+  }
+  if (-not [string]::IsNullOrWhiteSpace($cliText)) {
+    $lastErr = $cliText.Trim()
+  }
   throw ("Project delete failed. {0}" -f $lastErr)
 }
 
@@ -3885,13 +4132,20 @@ function Get-IncidentAnalysis([string[]]$LogTexts) {
   }
 }
 
-function Get-HttpStatusCodeSafe([string]$Url, [string]$Method = "GET", [int]$TimeoutSec = 20) {
+function Get-HttpStatusCodeSafe([string]$Url, [string]$Method = "GET", [int]$TimeoutSec = 20, [hashtable]$Headers = $null) {
   try {
     $req = [System.Net.HttpWebRequest]::Create($Url)
     $req.Method = $Method
     $req.Timeout = $TimeoutSec * 1000
     $req.ReadWriteTimeout = $TimeoutSec * 1000
     $req.AllowAutoRedirect = $true
+    if ($null -ne $Headers) {
+      foreach ($k in $Headers.Keys) {
+        if (-not [string]::IsNullOrWhiteSpace([string]$k)) {
+          $req.Headers[[string]$k] = [string]$Headers[$k]
+        }
+      }
+    }
     $resp = [System.Net.HttpWebResponse]$req.GetResponse()
     $code = [int]$resp.StatusCode
     $resp.Close()
@@ -3910,10 +4164,14 @@ function Get-HttpStatusCodeSafe([string]$Url, [string]$Method = "GET", [int]$Tim
   }
 }
 
-function Run-HealthAndSmokeChecks([string]$ProjectName, [string]$RelayPath, [string]$Runtime = "node") {
+function Run-HealthAndSmokeChecks([string]$ProjectName, [string]$RelayPath, [string]$Runtime = "node", [string]$RelayKey = "") {
   $domain = "https://$ProjectName.vercel.app"
   $rp = if ($RelayPath.StartsWith("/")) { $RelayPath } else { "/$RelayPath" }
   $isRewrite = ([string]$Runtime).ToLowerInvariant() -eq "rewrite"
+  $relayHeaders = $null
+  if ($isRewrite -and -not [string]::IsNullOrWhiteSpace($RelayKey)) {
+    $relayHeaders = @{ "x-relay-key" = $RelayKey }
+  }
 
   Write-Step "Basic website check"
   try {
@@ -3930,7 +4188,7 @@ function Run-HealthAndSmokeChecks([string]$ProjectName, [string]$RelayPath, [str
   }
   try {
     $apiSw = [System.Diagnostics.Stopwatch]::StartNew()
-    $apiStatus = Get-HttpStatusCodeSafe -Url "$domain$rp/test" -Method "GET" -TimeoutSec 20
+    $apiStatus = Get-HttpStatusCodeSafe -Url "$domain$rp/test" -Method "GET" -TimeoutSec 20 -Headers $relayHeaders
     $apiSw.Stop()
     if ($apiStatus -gt 0) {
       Write-Host ("Relay path answered. Status={0}, time={1} ms" -f $apiStatus, $apiSw.ElapsedMilliseconds) -ForegroundColor Green
@@ -4413,7 +4671,13 @@ function Run-ManagementLoop([string]$InitialScope) {
           }
           $rp = Read-Default "Relay path for checks (0 = Back)" $selectedRelayPath
           if ($rp -eq "0") { break }
-          Run-HealthAndSmokeChecks -ProjectName $selectedProjectName -RelayPath $rp -Runtime $selectedRuntime
+          $relayKeyForCheck = ""
+          if ($selectedRuntime -eq "rewrite") {
+            Write-Host "If this Fast Pipe deploy uses RELAY_KEY, enter it for an accurate relay-path check." -ForegroundColor DarkYellow
+            $relayKeyForCheck = Read-Optional "x-relay-key for this check only (empty = no header, 0 = Back)"
+            if ($relayKeyForCheck -eq "0") { break }
+          }
+          Run-HealthAndSmokeChecks -ProjectName $selectedProjectName -RelayPath $rp -Runtime $selectedRuntime -RelayKey $relayKeyForCheck
         }
         "7" {
           if ([string]::IsNullOrWhiteSpace($selectedProjectName)) {
